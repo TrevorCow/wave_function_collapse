@@ -1,15 +1,20 @@
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::fmt::Debug;
+use itertools::Itertools;
 use rand::rngs::{SmallRng, ThreadRng};
 use rand::{Rng, SeedableRng};
+use rand::seq::IndexedRandom;
 use crate::constrait_solver::CellSolveState::{Solved, Unsolved};
 use crate::piece;
-use crate::piece::{Cell, PieceOps, get_full_cell_domain, get_piece_domain};
+use crate::piece::{Cell, PieceOps, get_full_cell_domain, get_piece_domain, VisualCell};
+use crate::piece::VisualCell::CellEmpty;
 
 pub const PUZZLE_WIDTH: usize = 6;
 pub const PUZZLE_HEIGHT: usize = 6;
 pub type Domain = Vec<Cell>;
 
+#[derive(Debug)]
 pub enum Direction {
     Right,
     Up,
@@ -26,8 +31,9 @@ pub enum CellSolveState {
 #[derive(Debug, Clone)]
 pub struct Grid {
     pub grid: [[CellSolveState; PUZZLE_WIDTH]; PUZZLE_HEIGHT],
+    pub visual_grid: [[VisualCell; PUZZLE_WIDTH]; PUZZLE_WIDTH],
 
-    pub pieces_left: Vec<&'static (dyn PieceOps + Sync)>,
+    pub pieces_left: Vec<&'static dyn PieceOps>,
 }
 
 impl Default for Grid {
@@ -86,6 +92,7 @@ impl Default for Grid {
                     full_domain_cell_state.clone(),
                 ],
             ],
+            visual_grid: [[CellEmpty; PUZZLE_WIDTH]; PUZZLE_HEIGHT],
             pieces_left,
         }
     }
@@ -135,6 +142,14 @@ impl Grid {
     }
 
     pub fn check(&self) -> bool {
+        for cell in self.grid.iter().flatten() {
+            if let Unsolved(domain) = cell {
+                if domain.is_empty() {
+                    return false;
+                }
+            }
+        }
+
         for y in 0..6usize {
             for x in 0..6usize {
                 let curr_cell = &self.grid[y][x];
@@ -177,6 +192,7 @@ impl Grid {
                 let neighbor_top = self.get_neighbor_cell(x, y, Direction::Up).cloned();
                 let neighbor_left = self.get_neighbor_cell(x, y, Direction::Left).cloned();
                 let neighbor_bottom = self.get_neighbor_cell(x, y, Direction::Down).cloned();
+                // TODO: More constraints (Can't have 2 of the same cell edges diagonal from each other)
                 let curr_cell = &mut self.grid[y][x];
                 if let Unsolved(domain) = curr_cell {
                     domain.retain(|cell| {
@@ -213,58 +229,62 @@ impl Grid {
     // 30 13 23 33 43 53
     // 40 14 24 34 44 54
     // 50 15 25 35 45 55
-    pub fn place_piece(&mut self, piece: &(dyn PieceOps + Sync), x: usize, y: usize, rotation: PieceRotation) -> bool {
+    pub fn place_piece(&mut self, piece: &dyn PieceOps, x: usize, y: usize) -> Result<(), &'static str> {
         assert!(self.pieces_left.contains(&piece));
 
-        let mut width = piece.width();
-        let mut height = piece.height();
-
-        match rotation {
-            PieceRotation::CCW0 => {}
-            PieceRotation::CCW90 => {
-                std::mem::swap(&mut width, &mut height);
-            }
-            PieceRotation::CCW180 => {}
-            PieceRotation::CCW270 => {
-                std::mem::swap(&mut width, &mut height);
-            }
-        }
+        let width = piece.width();
+        let height = piece.height();
 
         if x + width > 6 || y + height > 6 {
-            return false;
+            return Err("Piece cell outside bounds");
         }
 
-        let piece_cells = match rotation {
-            PieceRotation::CCW0 => piece.cells(),
-            PieceRotation::CCW90 => piece.rotate_90().cells(),
-            PieceRotation::CCW180 => piece.rotate_90().rotate_90().cells(),
-            PieceRotation::CCW270 => piece.rotate_90().rotate_90().rotate_90().cells(),
-        };
+        let piece_cells = piece.cells();
         let mut changes = self.clone();
         for local_x in 0..width {
             for local_y in 0..height {
                 let gx = local_x + x;
                 let gy = local_y + y;
                 if let Solved(_) = changes.grid[gy][gx] {
-                    println!("Tried to place piece which would overwrite Solved cell at {}, {}", gx, gy);
-                    return false;
+                    // println!("Tried to place piece which would overwrite Solved cell at {}, {}", gx, gy);
+                    return Err("Tried to place piece which would overwrite Solved cell");
                 } else {
                     changes.grid[gy][gx] = Solved(piece_cells[local_y][local_x]);
                 }
             }
         }
+        changes.do_constraint_propagation();
         if !changes.check() {
-            return false
+            return Err("Failed check after placing piece")
         }
         *self = changes;
-        true
+        self.pieces_left.retain(|p| piece != *p);
+
+        let visual_cells = piece.visual_cells();
+        for local_x in 0..width {
+            for local_y in 0..height {
+                self.visual_grid[local_y + y][local_x + x] = visual_cells[local_y][local_x];
+            }
+        }
+
+        Ok(())
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct SolverMove {
+    piece_id: usize,
+    rotation: PieceRotation,
+    x: usize,
+    y: usize,
 }
 
 #[derive(Debug)]
 pub struct SolverState {
-    pub current_grid: Grid,
     pub grid_stack: Vec<Grid>,
+
+    // Wait a second, that just sounds like recursion with extra steps!
+    pub tried_branches: Vec<Vec<SolverMove>>,
 
     rng: SmallRng,
 }
@@ -273,73 +293,128 @@ impl SolverState {
     pub fn new() -> SolverState {
         let starting_grid = Grid::default();
         SolverState {
-            current_grid: starting_grid,
-            grid_stack: vec![],
+            grid_stack: vec![starting_grid],
+            tried_branches: vec![vec![]],
 
             rng: SmallRng::seed_from_u64(69),
         }
     }
 
-    pub fn propagate(&mut self) {
-        let mut did_propagate = false;
-        'outer: for y in 0..6usize {
-            for x in 0..6usize {
-                let curr_cell = &self.current_grid.grid[y][x];
-                if let Unsolved(domain) = curr_cell.clone() {
-                    if domain.len() == 1 {
-                        for (i, p) in get_piece_domain().into_iter().enumerate(){
-                            if p.cells()[0][0] == domain[0] {
-                                for rotation in PieceRotation::ROTATIONS {
-                                    let successfully_placed_piece = self.current_grid.place_piece(*p, x, y, rotation);
-                                    if successfully_placed_piece {
-                                        did_propagate = true;
-                                        break 'outer;
-                                    } else {
-                                        println!("Failed to place piece. ID: {} Rotation: {:?}", i + 1, rotation);
-                                    }
+    pub fn propagatev2(&mut self){
+        // Push state
+        // Try to place a piece
+        // If find piece to place, done
+        // If can't find piece to place, pop and try again
+        // If nothing left to pop, failed
 
-                                }
+        #[derive(Debug)]
+        struct DomainWithPosition {
+            domain: Domain,
+            x: usize,
+            y: usize,
+        }
+
+        let mut cells_by_entropy = self
+            .current_grid()
+            .grid
+            .iter()
+            .enumerate()
+            .map(|(y, row)| {
+                row.iter().enumerate().map(move |(x, cell_state)| {
+                    if let Unsolved(domain) = cell_state {
+                        Some(
+                            DomainWithPosition{
+                                domain: domain.clone(),
+                                x,
+                                y
                             }
-                        }
+                        )
+                    } else {
+                        None
+                    }
+                })
+            })
+            .flatten()
+            .flatten()
+            .sorted_by(|d1, d2| d1.domain.len().cmp(&d2.domain.len()))
+            .collect::<VecDeque<_>>();
+
+        let mut placed_piece = false;
+
+        'outer: for domain in cells_by_entropy {
+            // TODO: Choose pieces better
+             for piece in self.current_grid().pieces_left.clone() {
+                for rotation in PieceRotation::ROTATIONS {
+                    let permutation = piece.rotate(rotation);
+                    let solver_move = SolverMove {
+                        piece_id: permutation.piece_id(),
+                        rotation,
+                        x: domain.x,
+                        y: domain.y,
+                    };
+                    if self.tried_branches.last().unwrap().contains(&solver_move) {
+                        // println!("Skipping move because it already failed");
+                        continue;
+                    }
+                    let mut temp_grid = self.current_grid().clone();
+                    let place_result = temp_grid.place_piece(&*permutation, domain.x, domain.y);
+                    if place_result.is_ok() {
+                        self.push_state(solver_move);
+                        *self.grid_stack.last_mut().unwrap() = temp_grid;
+                        // println!("placed piece at {}, {}", domain.x, domain.y);
+                        placed_piece = true;
+                        break 'outer;
+                    } else {
+                        // println!(
+                        //     "Tried to place piece {} rotation {:?} at ({}, {}), failed.",
+                        //     permutation.piece_id(),
+                        //     rotation,
+                        //     domain.x,
+                        //     domain.y
+                        // );
                     }
                 }
             }
+            // break;
         }
 
-        if !did_propagate {
-            println!("No viable propagations. Picking random from lowest entropy");
-            let lowest_entropy_cell = self.current_grid.grid.iter().flatten().filter_map(|cell_solve_state|{
-                if let Unsolved(domain) = cell_solve_state {
-                    Some(domain)
-                }else {
-                    None
-                }
-            }).min_by(|cell1, cell2| {
-                cell1.len().cmp(&cell2.len())
-            }).unwrap();
-            let rand = self.rng.random_range(0..lowest_entropy_cell.len());
-            let random_cell = lowest_entropy_cell[rand];
-            println!("Random Cell: {:?}", random_cell);
+        if !placed_piece {
+            self.pop_state();
+            // Couldn't place a piece, we need to backtrack
+            // println!("Failed to place any piece, backtracking...")
         }
+
     }
 
     pub fn tick(&mut self) {
-        self.current_grid.do_constraint_propagation();
-        self.propagate();
+        // self.propagate();
+        self.propagatev2();
     }
 
-    pub fn push_state(&mut self){
-        self.grid_stack.push(self.current_grid.clone());
+    pub fn current_grid(&self) -> &Grid {
+        self.grid_stack.last().unwrap()
+    }
+
+    pub fn current_grid_mut(&mut self) -> &mut Grid {
+        self.grid_stack.last_mut().unwrap()
+    }
+
+    pub fn push_state(&mut self, solver_move: SolverMove){
+        self.grid_stack.push(self.current_grid().clone());
+        self.tried_branches.last_mut().unwrap().push(solver_move);
+        self.tried_branches.push(vec![]);
+        // println!("Pushed state with solved: {}/{}", get_piece_domain().len() - self.current_grid().pieces_left.len(), get_piece_domain().len());
     }
 
     pub fn pop_state(&mut self){
-        self.current_grid = self.grid_stack.pop().unwrap();
+        self.grid_stack.pop().unwrap();
+        self.tried_branches.pop().unwrap();
     }
 
     pub fn solve(&self) {}
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PieceRotation {
     CCW0,
     CCW90,
