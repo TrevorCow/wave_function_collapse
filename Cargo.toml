@@ -1,0 +1,15 @@
+[package]
+name = "wave_function_collapse"
+version = "0.1.0"
+edition = "2024"
+
+default-run = "wave_function_collapse"
+
+[[bin]]
+name = "process_puzzle_sheet"
+
+[dependencies]
+sdl2 = { version = "0.38.0"}
+image = "0.25.8"
+rand = "0.10.0-rc.0"
+itertools = "0.14.0"
