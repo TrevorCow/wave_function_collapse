@@ -1,13 +1,10 @@
-use crate::constrait_solver::{Direction, PieceRotation};
+use crate::constraint_solver::PieceRotation;
 use crate::piece::ConnectionType::{Double, NoConnection, Straight};
 use crate::piece::VisualCell::{CellEmpty, CellNCenter, CellNLeft, CellNRight, CellStraight, CellWeird1, CellWeird2};
-use itertools::Itertools;
 use std::collections::HashSet;
 use std::fmt::Debug;
-use std::iter::Flatten;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
-use std::process::exit;
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -84,7 +81,7 @@ impl VisualCell {
 
     pub const fn angle(&self) -> u32 {
         match self {
-            VisualCell::CellEmpty => (0),
+            VisualCell::CellEmpty => 0,
             VisualCell::CellNCenter(angle) => *angle,
             VisualCell::CellNLeft(angle) => *angle,
             VisualCell::CellNRight(angle) => *angle,
@@ -108,107 +105,103 @@ impl<const WIDTH: usize, const HEIGHT: usize> PieceDefinition<WIDTH, HEIGHT> {
         Self { piece_id, logical_cells, visual_cells }
     }
 
-    // pub fn into_piece(self) -> Piece {
-    //     Piece { width: WIDTH, height: HEIGHT, cells: self.cells.to_vec().iter().map(|c| c.to_vec()).collect() }
-    // }
-
-    pub fn as_piece_ops(&self) -> &(dyn PieceOps + Sync) {
+    pub fn as_piece_ops(&self) -> &(dyn PieceOps) {
         self
     }
 }
 
-pub static Cell_Empty: Cell = Cell { right: NoConnection, top: NoConnection, left: NoConnection, bottom: NoConnection };
-
-static Cell_N_Right: Cell = Cell { right: Straight, top: NoConnection, left: NoConnection, bottom: Double };
-static Cell_N_Right_90: Cell = Cell_N_Right.rotate_90_ccw();
-static Cell_N_Right_180: Cell = Cell_N_Right_90.rotate_90_ccw();
-static Cell_N_Right_270: Cell = Cell_N_Right_180.rotate_90_ccw();
-
-static Cell_N_Left: Cell = Cell { right: NoConnection, top: NoConnection, left: Straight, bottom: Double };
-static Cell_N_Left_90: Cell = Cell_N_Left.rotate_90_ccw();
-static Cell_N_Left_180: Cell = Cell_N_Left_90.rotate_90_ccw();
-static Cell_N_Left_270: Cell = Cell_N_Left_180.rotate_90_ccw();
-
-static Cell_N_Center: Cell = Cell { right: NoConnection, top: Straight, left: NoConnection, bottom: Double };
-static Cell_N_Center_90: Cell = Cell_N_Center.rotate_90_ccw();
-static Cell_N_Center_180: Cell = Cell_N_Center_90.rotate_90_ccw();
-static Cell_N_Center_270: Cell = Cell_N_Center_180.rotate_90_ccw();
-
-static Cell_Straight: Cell = Cell { right: NoConnection, top: Straight, left: NoConnection, bottom: Straight };
-
-// Used for the weird 2x2 piece
-static CELL_WEIRD_1: Cell = Cell { right: NoConnection, top: Double, left: NoConnection, bottom: NoConnection };
-static CELL_WEIRD_2: Cell = Cell { right: NoConnection, top: Double, left: NoConnection, bottom: NoConnection };
+pub static CELL_EMPTY: Cell = Cell { right: NoConnection, top: NoConnection, left: NoConnection, bottom: NoConnection };
 
 pub static P1: PieceDefinition<4, 1> = PieceDefinition::new(
     1,
     [[
-        Cell_Empty,
-        Cell_Empty,
+        CELL_EMPTY,
+        CELL_EMPTY,
         Cell { right: NoConnection, top: NoConnection, left: NoConnection, bottom: Double },
         Cell { right: NoConnection, top: NoConnection, left: NoConnection, bottom: Double },
     ]],
     [[CellEmpty, CellEmpty, CellNRight(0), CellNLeft(0)]],
 );
 pub static P2: PieceDefinition<1, 3> = PieceDefinition::new(
-    2,                                                          //
-    [[Cell_N_Center_180], [Cell_N_Left_270], [Cell_N_Left_90]], //
+    2, //
+    [
+        [Cell { right: NoConnection, top: Double, left: NoConnection, bottom: NoConnection }], //
+        [Cell { right: NoConnection, top: NoConnection, left: Double, bottom: NoConnection}],                                                                     //
+        [Cell { right: Double, top: NoConnection, left: NoConnection, bottom: Straight }],                                                                      //
+    ], //
     [[CellNCenter(180)], [CellNLeft(270)], [CellNLeft(90)]],
 );
 pub static P3: PieceDefinition<1, 3> = PieceDefinition::new(
     3,                                                //
-    [[Cell_N_Right_180], [Cell_Empty], [Cell_Empty]], //
+    [
+        [Cell { right: NoConnection, top: Double, left: Straight, bottom: NoConnection }], //
+        [CELL_EMPTY], //
+        [CELL_EMPTY], //
+    ], //
     [[CellNRight(180)], [CellEmpty], [CellEmpty]],
 );
 pub static P4: PieceDefinition<1, 3> = PieceDefinition::new(
     4,                                                    //
-    [[Cell_N_Left_90], [Cell_Straight], [Cell_N_Center]], //
+    [
+        [Cell { right: Double, top: NoConnection, left: NoConnection, bottom: NoConnection }], //
+        [CELL_EMPTY], //
+        [Cell { right: NoConnection, top: NoConnection, left: NoConnection, bottom: Double}], //
+    ], //
     [[CellNLeft(90)], [CellStraight(0)], [CellNCenter(0)]],
 );
 pub static P5: PieceDefinition<3, 1> = PieceDefinition::new(
     5,                                              //
-    [[Cell_N_Right, Cell_N_Right_180, Cell_Empty]], //
+    [[Cell {right: NoConnection, top: NoConnection, left: NoConnection, bottom: Double}, Cell {right: NoConnection, top: Double, left: NoConnection, bottom: NoConnection}, CELL_EMPTY]], //
     [[CellNRight(0), CellNRight(180), CellEmpty]],
 );
 pub static P6: PieceDefinition<3, 1> = PieceDefinition::new(
     6,                                            //
-    [[Cell_N_Left_180, Cell_N_Left, Cell_Empty]], //
+    [[Cell {right: NoConnection, top: Double, left: NoConnection, bottom: NoConnection}, Cell {right: NoConnection, top: NoConnection, left: NoConnection, bottom: Double}, CELL_EMPTY]], //
     [[CellNLeft(180), CellNLeft(0), CellEmpty]],
 );
 pub static P7: PieceDefinition<2, 1> = PieceDefinition::new(
     7,                              //
-    [[Cell_N_Left, Cell_N_Center]], //
-    [[CellNLeft(0), CellNCenter(0)]],
+    [[Cell{right: NoConnection, top: Straight, left: Double, bottom: NoConnection}, Cell{ right: NoConnection, top: Straight, left: NoConnection, bottom: Double }]], //
+    [[CellNLeft(270), CellNCenter(0)]],
 );
 pub static P8: PieceDefinition<1, 3> = PieceDefinition::new(
     8,                                                          //
-    [[Cell_N_Center_180], [Cell_N_Center], [Cell_N_Right_180]], //
+    [
+        [Cell{right: NoConnection, top: Double, left: NoConnection, bottom: NoConnection}], //
+        [CELL_EMPTY], //
+        [Cell {right: NoConnection, top: NoConnection, left: Straight, bottom: NoConnection}]], //
     [[CellNCenter(180)], [CellNCenter(0)], [CellNRight(180)]],
 );
 pub static P9: PieceDefinition<2, 1> = PieceDefinition::new(
     9,                          //
-    [[Cell_Empty, Cell_Empty]], //
+    [[CELL_EMPTY, CELL_EMPTY]], //
     [[CellEmpty, CellEmpty]],   //
 );
 pub static P10_P11: PieceDefinition<2, 2> = PieceDefinition::new(
     10,                                                           //
-    [[CELL_WEIRD_1, Cell_N_Right], [Cell_Empty, CELL_WEIRD_2]],   //
+    [
+        [Cell{right: NoConnection, top: Double, left: NoConnection, bottom: NoConnection}, Cell{right: Straight, top: NoConnection, left: NoConnection, bottom: NoConnection}],//
+        [CELL_EMPTY, CELL_EMPTY],//
+    ],   //
     [[CellWeird1(0), CellNRight(0)], [CellEmpty, CellWeird2(0)]], //
 );
 pub static P12: PieceDefinition<1, 2> = PieceDefinition::new(
     12,                                 //
-    [[Cell_N_Left], [Cell_N_Left_180]], //
-    [[CellNLeft(0)], [CellNLeft(180)]],         //
+    [
+        [Cell {right: NoConnection, top: NoConnection, left: Straight, bottom: NoConnection}], //
+        [Cell {right: Straight, top: NoConnection, left: NoConnection, bottom: NoConnection}],//
+    ], //
+    [[CellNLeft(0)], [CellNLeft(180)]], //
 );
 pub static P13: PieceDefinition<2, 1> = PieceDefinition::new(
     13,                                     //
-    [[Cell_N_Right_90, Cell_N_Center_270]], //
-    [[CellNRight(90), CellNCenter(270)]],               //
+    [[Cell{right: NoConnection, top: Straight, left: NoConnection, bottom: NoConnection}, Cell{right: Straight, top: NoConnection, left: NoConnection, bottom: NoConnection}]], //
+    [[CellNRight(90), CellNCenter(270)]],   //
 );
 pub static P14: PieceDefinition<2, 1> = PieceDefinition::new(
     14,                                   //
-    [[Cell_N_Right_90, Cell_N_Left_270]], //
-    [[CellNRight(90), CellNLeft(270)]],             //
+    [[Cell{right: NoConnection, top: Straight, left: NoConnection, bottom: NoConnection}, Cell{right: NoConnection, top: Straight, left: NoConnection, bottom: NoConnection}]], //
+    [[CellNRight(90), CellNLeft(270)]],   //
 );
 
 pub trait PieceOps: Debug + Sync {
@@ -217,7 +210,11 @@ pub trait PieceOps: Debug + Sync {
     fn height(&self) -> usize;
     fn cells(&self) -> Vec<Vec<Cell>>;
 
+    fn cells_flat(&self) -> &[Cell];
+
     fn visual_cells(&self) -> Vec<Vec<VisualCell>>;
+
+    fn visual_cells_flat(&self) -> &[VisualCell];
 
     fn rotate_90(&self) -> Box<dyn PieceOps>;
 
@@ -247,8 +244,16 @@ impl<const WIDTH: usize, const HEIGHT: usize> PieceOps for PieceDefinition<WIDTH
         self.logical_cells.iter().cloned().map(|cells| cells.to_vec()).collect()
     }
 
+    fn cells_flat(&self) -> &[Cell] {
+        self.logical_cells.as_slice().as_flattened()
+    }
+    
     fn visual_cells(&self) -> Vec<Vec<VisualCell>> {
         self.visual_cells.iter().cloned().map(|cells| cells.to_vec()).collect()
+    }
+
+    fn visual_cells_flat(&self) -> &[VisualCell] {
+        self.visual_cells.as_slice().as_flattened()
     }
 
     fn rotate_90(&self) -> Box<dyn PieceOps> {

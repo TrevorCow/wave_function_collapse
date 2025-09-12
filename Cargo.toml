@@ -8,8 +8,18 @@ default-run = "wave_function_collapse"
 [[bin]]
 name = "process_puzzle_sheet"
 
+[[bin]]
+name = "time_solver"
+
+[lib]
+name = "wave_function_collapse"
+
 [dependencies]
 sdl2 = { version = "0.38.0"}
 image = "0.25.8"
 rand = "0.10.0-rc.0"
 itertools = "0.14.0"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
