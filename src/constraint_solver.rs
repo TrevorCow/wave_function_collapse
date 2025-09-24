@@ -199,7 +199,56 @@ impl Grid {
             }
         }
     }
-    
+
+    pub fn can_place_piece(&self, piece: &dyn PieceOps, x: usize, y: usize) -> bool {
+        debug_assert!(self.pieces_left.contains(&piece));
+
+        let width = piece.width();
+        let height = piece.height();
+
+        if x + width > 6 || y + height > 6 {
+            return false;
+        }
+
+        for local_x in 0..width {
+            for local_y in 0..height {
+                let gx = local_x + x;
+                let gy = local_y + y;
+                if let Solved(_) = self.grid[gy][gx] {
+                    // println!("Tried to place piece which would overwrite Solved cell at {}, {}", gx, gy);
+                    return false;
+                }
+            }
+        }
+        if !self.check() {
+            return false;
+        }
+
+        true
+    }
+
+    pub fn place_piece_unchecked(&mut self, piece: &dyn PieceOps, x: usize, y: usize) {
+        let width = piece.width();
+        let height = piece.height();
+
+        let piece_cells = piece.cells_flat();
+        for local_x in 0..width {
+            for local_y in 0..height {
+                let gx = local_x + x;
+                let gy = local_y + y;
+                self.grid[gy][gx] = Solved(piece_cells[local_y * width + local_x]);
+            }
+        }
+        self.do_constraint_propagation();
+        self.pieces_left.retain(|p| piece != *p);
+        let visual_cells = piece.visual_cells_flat();
+        for local_x in 0..width {
+            for local_y in 0..height {
+                self.visual_grid[local_y + y][local_x + x] = visual_cells[local_y * width + local_x];
+            }
+        }
+    }
+
     // 00 10 20 30 40 50
     // 10 11 21 31 41 51
     // 20 12 22 32 42 52
@@ -207,7 +256,7 @@ impl Grid {
     // 40 14 24 34 44 54
     // 50 15 25 35 45 55
     pub fn place_piece(&mut self, piece: &dyn PieceOps, x: usize, y: usize) -> Result<(), &'static str> {
-        assert!(self.pieces_left.contains(&piece));
+        debug_assert!(self.pieces_left.contains(&piece));
 
         let width = piece.width();
         let height = piece.height();
@@ -264,7 +313,7 @@ impl Grid {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SolverMove {
     piece_id: usize,
     rotation: PieceRotation,
@@ -326,6 +375,7 @@ impl SolverState {
         // TODO: Choose pieces better
         'outer:
             for piece in self.current_grid().pieces_left.clone() {
+                let pid = piece.piece_id();
                 'rot: for rotation in PieceRotation::ROTATIONS {
                     let permutation = piece.rotate(rotation);
                     // if !permutation.cells().iter().flatten().contains(chosen_cell) {
@@ -346,20 +396,22 @@ impl SolverState {
                             if local_x > domain.x || local_y > domain.y {
                                 continue;
                             }
-                            let solver_move = SolverMove { piece_id: permutation.piece_id(), rotation, x: domain.x - local_x, y: domain.y - local_y };
+                            let solver_move = SolverMove { piece_id: pid, rotation, x: domain.x - local_x, y: domain.y - local_y };
                             if self.tried_branches.last().unwrap().contains(&solver_move) {
                                 // println!("Skipping move because it already failed");
                                 continue;
                             }
-                            let mut temp_grid = self.current_grid().clone();
-                            let place_result = temp_grid.place_piece(&*permutation, solver_move.x, solver_move.y);
-                            if place_result.is_ok() {
-                                self.push_state(solver_move);
-                                *self.grid_stack.last_mut().unwrap() = temp_grid;
+                            let can_place_piece = self.current_grid().can_place_piece(&*permutation, solver_move.x, solver_move.y);
+                            // let place_result = self.current_grid_mut().place_piece(&*permutation, solver_move.x, solver_move.y);
+                            if can_place_piece {
+                                self.tried_branches.last_mut().unwrap().push(solver_move.clone());
+                                self.push_state();
+                                self.current_grid_mut().place_piece_unchecked(&*permutation, solver_move.x, solver_move.y);
                                 // println!("placed piece at {}, {}", domain.x, domain.y);
                                 placed_piece = true;
                                 break 'outer;
                             } else {
+                                // self.pop_state();
                                 // println!(
                                 //     "Tried to place piece {} rotation {:?} at ({}, {}), failed.",
                                 //     permutation.piece_id(),
@@ -394,9 +446,8 @@ impl SolverState {
         self.grid_stack.last_mut().unwrap()
     }
 
-    pub fn push_state(&mut self, solver_move: SolverMove) {
+    pub fn push_state(&mut self) {
         self.grid_stack.push(self.current_grid().clone());
-        self.tried_branches.last_mut().unwrap().push(solver_move);
         self.tried_branches.push(vec![]);
         // println!("Pushed state with solved: {}/{}", get_piece_domain().len() - self.current_grid().pieces_left.len(), get_piece_domain().len());
     }
